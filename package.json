@@ -25,6 +25,7 @@
   },
   "homepage": "https://github.com/xilon-my/xilon-agent#readme",
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.54.0",
     "dotenv": "^17.4.2",
     "openai": "^6.35.0"
   },

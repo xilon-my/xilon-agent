@@ -16,6 +16,7 @@
 - 会话快照保存、会话列表与恢复
 - 长期记忆保存与自动注入
 - 插件工具骨架与子任务代理能力
+- 飞书机器人桥接，可通过飞书与 agent 对话
 - 展示 prompt/completion/cached token
 - 按内置 Kimi 价格表估算每轮成本
 - 退出时展示当前会话总 token 和总成本
@@ -46,6 +47,10 @@ XILON_DEFAULT_MODEL=moonshot-v1-8k
 XILON_SYSTEM_PROMPT=You are a helpful CLI assistant.
 XILON_PERMISSION_MODE=ask
 XILON_CONTEXT_CHAR_BUDGET=20000
+XILON_FEISHU_APP_ID=
+XILON_FEISHU_APP_SECRET=
+XILON_FEISHU_VERIFICATION_TOKEN=
+XILON_FEISHU_PERMISSION_MODE=deny
 ```
 
 4. 开发模式运行
@@ -130,6 +135,27 @@ xilonagent resume
 xilonagent resume <session_id>
 ```
 
+启动飞书桥接：
+
+```bash
+xilonagent feishu
+```
+
+飞书桥接说明：
+
+- 在飞书开放平台创建自建应用并开通机器人能力
+- 在事件订阅里选择“使用长连接接收事件”
+- 事件订阅里至少启用 `im.message.receive_v1`
+- 不需要配置公网地址、事件回调 URL 或内网穿透
+- 不需要处理事件 challenge 校验
+- 当前实现支持文本消息
+- 单聊消息会直接进入 agent
+- 群聊消息默认只处理带 `@bot` 的文本
+- 飞书会话会独立保存为 session snapshot
+- 飞书里的 `/clear`、`/stats`、`/todos`、`/model <id>` 可直接使用
+- 默认 `XILON_FEISHU_PERMISSION_MODE=deny`
+- 如果你希望飞书端允许执行命令或改文件，再显式改成 `allow`
+
 查看历史：
 
 ```bash
@@ -153,6 +179,7 @@ xilonagent history delete <id>
 历史记录默认保存在当前用户目录下的 `.xilon-agent/history`。
 
 会话快照默认保存在 `.xilon-agent/sessions`，长期记忆保存在 `.xilon-agent/memory`。
+飞书对话也会落到 `.xilon-agent/sessions` 与 `.xilon-agent/history`。
 
 ## 当前版本说明
 

@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { exec } from "node:child_process";
@@ -12,7 +13,32 @@ import type { TodoItem } from "./types.js";
 
 const execAsync = promisify(exec);
 const MAX_OUTPUT_LENGTH = 6000;
-const MAX_FILE_SIZE = 200_000;
+const MAX_FILE_SIZE = 5_000_000;
+const MAX_SEARCH_FILES = 5000;
+const MAX_SEARCH_MATCHES = 120;
+const KNOWN_BINARY_EXTENSIONS = new Set([
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".zip",
+  ".rar",
+  ".7z",
+  ".exe",
+  ".dll",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".webp",
+  ".mp3",
+  ".mp4",
+  ".avi",
+  ".mov",
+]);
 
 export interface ToolTrace {
   name: string;
@@ -32,6 +58,7 @@ export interface ToolExecutionContext {
   todos: TodoItem[];
   setTodos: (todos: TodoItem[]) => void;
   delegateTask?: (task: string) => Promise<string>;
+  sendLocalFile?: (filePath: string) => Promise<string>;
 }
 
 const BUILTIN_TOOLS: ChatCompletionTool[] = [
@@ -39,7 +66,15 @@ const BUILTIN_TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "get_cwd",
-      description: "Get current working directory for this CLI session.",
+      description: "Get current working directory for this CLI session. This is only the default starting folder, not a filesystem limit.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_drives",
+      description: "List available filesystem roots or drive letters on the local machine. Use this first when you need to explore the whole computer on Windows.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -47,11 +82,11 @@ const BUILTIN_TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "list_files",
-      description: "List files and directories under a path. Use this for folders and workspace exploration.",
+      description: "List files and directories under a path anywhere on the local machine. Use absolute paths like C:\\, D:\\, or E:\\ when you need to explore outside the current project.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute or relative path. Defaults to current working directory." },
+          path: { type: "string", description: "Absolute or relative path. Defaults to current working directory, but absolute paths can point anywhere on the computer." },
         },
         additionalProperties: false,
       },
@@ -61,12 +96,12 @@ const BUILTIN_TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "glob_search",
-      description: "Find files by wildcard pattern like src/*.ts or **/*.md.",
+      description: "Find files by wildcard pattern like src/*.ts or **/*.md under any local path. Use an absolute path to search outside the current project.",
       parameters: {
         type: "object",
         properties: {
           pattern: { type: "string", description: "Glob-like wildcard pattern." },
-          path: { type: "string", description: "Directory to search from." },
+          path: { type: "string", description: "Directory to search from. Can be any absolute local path." },
         },
         required: ["pattern"],
         additionalProperties: false,
@@ -77,12 +112,12 @@ const BUILTIN_TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "grep_files",
-      description: "Search file contents by text or regular expression.",
+      description: "Search file contents by text or regular expression under any local path. Use an absolute path to search outside the current project.",
       parameters: {
         type: "object",
         properties: {
           pattern: { type: "string", description: "Literal text or regex pattern to search." },
-          path: { type: "string", description: "Directory to search from." },
+          path: { type: "string", description: "Directory to search from. Can be any absolute local path." },
           regex: { type: "boolean", description: "When true, treat pattern as JavaScript regular expression." },
         },
         required: ["pattern"],
@@ -94,11 +129,11 @@ const BUILTIN_TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "read_file",
-      description: "Read a text file only. Do not use this on directories; use list_files for folders.",
+      description: "Read a text file anywhere on the local machine. Do not use this on directories; use list_files for folders. Absolute paths are allowed.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute or relative file path." },
+          path: { type: "string", description: "Absolute or relative file path. Absolute paths can point anywhere on the local machine." },
           start_line: { type: "number", description: "Optional 1-based start line." },
           end_line: { type: "number", description: "Optional 1-based end line." },
         },
@@ -110,12 +145,27 @@ const BUILTIN_TOOLS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "write_file",
-      description: "Create or overwrite a text file with full content.",
+      name: "send_local_file",
+      description: "Send a local file directly to the current chat when the user asks you to send, deliver, forward, or share a file. Use this instead of read_file for non-text files or when the user wants the actual file.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute or relative file path." },
+          path: { type: "string", description: "Absolute or relative local file path to send." },
+        },
+        required: ["path"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "Create or overwrite a text file with full content anywhere on the local machine, subject to permissions.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or relative file path. Absolute paths can point anywhere on the local machine." },
           content: { type: "string", description: "Full file content to write." },
         },
         required: ["path", "content"],
@@ -127,11 +177,11 @@ const BUILTIN_TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "edit_file",
-      description: "Edit an existing text file by replacing one string with another.",
+      description: "Edit an existing text file anywhere on the local machine by replacing one string with another, subject to permissions.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute or relative file path." },
+          path: { type: "string", description: "Absolute or relative file path. Absolute paths can point anywhere on the local machine." },
           find: { type: "string", description: "Existing text to replace." },
           replace: { type: "string", description: "Replacement text." },
           replace_all: { type: "boolean", description: "Replace all matches instead of the first one." },
@@ -145,11 +195,12 @@ const BUILTIN_TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "run_command",
-      description: "Run a PowerShell command inside the current project directory.",
+      description: "Run a PowerShell command on the local machine. By default it runs in the current working directory, but it can be pointed at another absolute directory.",
       parameters: {
         type: "object",
         properties: {
           command: { type: "string", description: "PowerShell command to run." },
+          cwd: { type: "string", description: "Optional absolute or relative working directory for the command." },
         },
         required: ["command"],
         additionalProperties: false,
@@ -270,6 +321,8 @@ export async function executeToolCall(
     switch (toolName) {
       case "get_cwd":
         return await executeGetCwd();
+      case "list_drives":
+        return await executeListDrives();
       case "list_files":
         return await executeListFiles(parsedArgs.path);
       case "glob_search":
@@ -278,12 +331,14 @@ export async function executeToolCall(
         return await executeGrepFiles(parsedArgs.pattern, parsedArgs.path, parsedArgs.regex);
       case "read_file":
         return await executeReadFile(parsedArgs.path, parsedArgs.start_line, parsedArgs.end_line);
+      case "send_local_file":
+        return await executeSendLocalFile(parsedArgs.path, context);
       case "write_file":
         return await executeWriteFile(parsedArgs.path, parsedArgs.content, context);
       case "edit_file":
         return await executeEditFile(parsedArgs.path, parsedArgs.find, parsedArgs.replace, parsedArgs.replace_all, context);
       case "run_command":
-        return await executeRunCommand(parsedArgs.command, context);
+        return await executeRunCommand(parsedArgs.command, parsedArgs.cwd, context);
       case "todo_write":
         return executeTodoWrite(parsedArgs.todos, context);
       case "save_memory":
@@ -325,6 +380,30 @@ async function executeGetCwd(): Promise<ToolExecutionResult> {
   return { content: cwd, summary: `当前工作目录: ${cwd}` };
 }
 
+async function executeListDrives(): Promise<ToolExecutionResult> {
+  if (process.platform === "win32") {
+    const drives: string[] = [];
+    for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+      const drive = `${letter}:\\`;
+      try {
+        await fs.access(drive);
+        drives.push(drive);
+      } catch {
+        continue;
+      }
+    }
+    return {
+      content: drives.join("\n") || "(no drives found)",
+      summary: `发现 ${drives.length} 个可访问磁盘根目录`,
+    };
+  }
+
+  return {
+    content: "/",
+    summary: "当前系统根目录为 /",
+  };
+}
+
 async function executeListFiles(inputPath?: unknown): Promise<ToolExecutionResult> {
   const targetPath = resolvePath(inputPath);
   const entries = await fs.readdir(targetPath, { withFileTypes: true });
@@ -340,23 +419,26 @@ async function executeListFiles(inputPath?: unknown): Promise<ToolExecutionResul
 async function executeGlobSearch(patternValue: unknown, inputPath?: unknown): Promise<ToolExecutionResult> {
   const pattern = ensureString(patternValue, "pattern");
   const basePath = resolvePath(inputPath);
-  const files = await collectFiles(basePath);
   const regex = wildcardToRegExp(pattern);
-  const matches = files.filter((file) => regex.test(normalizeForMatch(path.relative(basePath, file))));
+  const scan = await collectFiles(basePath, {
+    maxFiles: MAX_SEARCH_FILES,
+    match: (file) => regex.test(normalizeForMatch(path.relative(basePath, file))),
+  });
+  const matches = scan.matches;
   return {
     content: truncate(matches.join("\n") || "(no matches)"),
-    summary: `按模式 ${pattern} 找到 ${matches.length} 个文件`,
+    summary: `按模式 ${pattern} 找到 ${matches.length} 个文件${scan.truncated ? "（搜索范围已截断）" : ""}`,
   };
 }
 
 async function executeGrepFiles(patternValue: unknown, inputPath?: unknown, regexValue?: unknown): Promise<ToolExecutionResult> {
   const pattern = ensureString(patternValue, "pattern");
   const basePath = resolvePath(inputPath);
-  const files = await collectFiles(basePath);
   const matcher = typeof regexValue === "boolean" && regexValue ? new RegExp(pattern, "i") : pattern.toLowerCase();
   const matches: string[] = [];
+  const scan = await collectFiles(basePath, { maxFiles: MAX_SEARCH_FILES });
 
-  for (const file of files.slice(0, 400)) {
+  for (const file of scan.files) {
     try {
       const content = await fs.readFile(file, "utf8");
       const lines = content.split("\n");
@@ -365,12 +447,12 @@ async function executeGrepFiles(patternValue: unknown, inputPath?: unknown, rege
         const hit = typeof matcher === "string" ? line.toLowerCase().includes(matcher) : matcher.test(line);
         if (hit) {
           matches.push(`${file}:${index + 1}: ${line.trim()}`);
-          if (matches.length >= 120) {
+          if (matches.length >= MAX_SEARCH_MATCHES) {
             break;
           }
         }
       }
-      if (matches.length >= 120) {
+      if (matches.length >= MAX_SEARCH_MATCHES) {
         break;
       }
     } catch {
@@ -380,7 +462,7 @@ async function executeGrepFiles(patternValue: unknown, inputPath?: unknown, rege
 
   return {
     content: truncate(matches.join("\n") || "(no matches)"),
-    summary: `搜索 ${pattern} 命中 ${matches.length} 行`,
+    summary: `搜索 ${pattern} 命中 ${matches.length} 行${scan.truncated ? "（搜索范围已截断）" : ""}`,
   };
 }
 
@@ -390,11 +472,18 @@ async function executeReadFile(inputPath?: unknown, startLineValue?: unknown, en
   if (stat.isDirectory()) {
     throw new Error(`Path is a directory: ${targetPath}. Use list_files instead.`);
   }
+  if (isLikelyBinaryPath(targetPath)) {
+    throw new Error(`Path is a binary or document file that cannot be read as plain text: ${targetPath}`);
+  }
   if (stat.size > MAX_FILE_SIZE) {
-    throw new Error(`File is too large to read safely: ${targetPath}`);
+    throw new Error(`File is too large to read safely as plain text (${stat.size} bytes): ${targetPath}`);
   }
 
-  const content = await fs.readFile(targetPath, "utf8");
+  const raw = await fs.readFile(targetPath);
+  if (looksBinary(raw)) {
+    throw new Error(`Path appears to be a binary file and cannot be read as plain text: ${targetPath}`);
+  }
+  const content = raw.toString("utf8");
   const lines = content.split("\n");
   const startLine = typeof startLineValue === "number" && startLineValue > 0 ? startLineValue : 1;
   const endLine = typeof endLineValue === "number" && endLineValue >= startLine ? endLineValue : lines.length;
@@ -402,6 +491,26 @@ async function executeReadFile(inputPath?: unknown, startLineValue?: unknown, en
   return {
     content: truncate(sliced.join("\n")),
     summary: `读取文件: ${targetPath}${startLine !== 1 || endLine !== lines.length ? ` (${startLine}-${endLine})` : ""}`,
+  };
+}
+
+async function executeSendLocalFile(inputPath: unknown, context: ToolExecutionContext): Promise<ToolExecutionResult> {
+  const targetPath = resolvePath(ensureString(inputPath, "path"));
+  const stat = await fs.stat(targetPath);
+  if (stat.isDirectory()) {
+    throw new Error(`Path is a directory and cannot be sent as a file: ${targetPath}`);
+  }
+  if (!context.sendLocalFile) {
+    throw new Error(`Current runtime does not support sending local files: ${targetPath}`);
+  }
+  await requireToolPermission(context.permission, {
+    toolName: "send_local_file",
+    summary: `发送文件 ${targetPath}`,
+  });
+  const result = await context.sendLocalFile(targetPath);
+  return {
+    content: result,
+    summary: result,
   };
 }
 
@@ -448,16 +557,17 @@ async function executeEditFile(
   };
 }
 
-async function executeRunCommand(commandValue?: unknown, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+async function executeRunCommand(commandValue?: unknown, cwdValue?: unknown, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
   const command = ensureString(commandValue, "command");
+  const targetCwd = typeof cwdValue === "string" && cwdValue.trim() ? resolvePath(cwdValue) : process.cwd();
   await requireToolPermission(context?.permission, {
     toolName: "run_command",
-    summary: `执行命令 ${command}`,
+    summary: `执行命令 ${command}${targetCwd !== process.cwd() ? ` (cwd: ${targetCwd})` : ""}`,
     command,
   });
 
   const { stdout, stderr } = await execAsync(command, {
-    cwd: process.cwd(),
+    cwd: targetCwd,
     shell: "powershell.exe",
     timeout: 20_000,
     maxBuffer: 1024 * 1024,
@@ -466,7 +576,7 @@ async function executeRunCommand(commandValue?: unknown, context?: ToolExecution
   const merged = [stdout, stderr].filter(Boolean).join("\n").trim();
   return {
     content: truncate(merged || "(no output)"),
-    summary: `执行命令: ${command}`,
+    summary: `执行命令: ${command}${targetCwd !== process.cwd() ? ` (cwd: ${targetCwd})` : ""}`,
   };
 }
 
@@ -569,23 +679,52 @@ async function executePluginTool(
   };
 }
 
-async function collectFiles(basePath: string): Promise<string[]> {
-  const result: string[] = [];
-  const entries = await fs.readdir(basePath, { withFileTypes: true });
+async function collectFiles(
+  basePath: string,
+  options?: {
+    maxFiles?: number;
+    match?: (file: string) => boolean;
+  },
+): Promise<{ files: string[]; matches: string[]; truncated: boolean }> {
+  const maxFiles = options?.maxFiles ?? MAX_SEARCH_FILES;
+  const files: string[] = [];
+  const matches: string[] = [];
+  const queue = [basePath];
+  let truncated = false;
 
-  for (const entry of entries) {
-    const fullPath = path.join(basePath, entry.name);
-    if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") {
+  while (queue.length > 0) {
+    const currentPath = queue.shift()!;
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(currentPath, { withFileTypes: true });
+    } catch {
       continue;
     }
-    if (entry.isDirectory()) {
-      result.push(...(await collectFiles(fullPath)));
-    } else {
-      result.push(fullPath);
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentPath, entry.name);
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") {
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+        continue;
+      }
+      files.push(fullPath);
+      if (options?.match?.(fullPath)) {
+        matches.push(fullPath);
+      }
+      if (files.length >= maxFiles) {
+        truncated = true;
+        return { files, matches, truncated };
+      }
     }
   }
 
-  return result;
+  return { files, matches, truncated };
 }
 
 function normalizeForMatch(value: string): string {
@@ -599,6 +738,27 @@ function wildcardToRegExp(pattern: string): RegExp {
     .replace(/\*/g, "[^/]*")
     .replace(/\?/g, ".");
   return new RegExp(`^${normalized}$`, "i");
+}
+
+function isLikelyBinaryPath(filePath: string): boolean {
+  return KNOWN_BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function looksBinary(buffer: Buffer): boolean {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  if (sample.length === 0) {
+    return false;
+  }
+  let suspicious = 0;
+  for (const byte of sample) {
+    if (byte === 0) {
+      return true;
+    }
+    if ((byte < 7 || (byte > 14 && byte < 32)) && byte !== 9 && byte !== 10 && byte !== 13) {
+      suspicious += 1;
+    }
+  }
+  return suspicious / sample.length > 0.1;
 }
 
 function truncate(value: string): string {

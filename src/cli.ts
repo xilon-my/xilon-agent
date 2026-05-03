@@ -11,6 +11,7 @@ import { formatCny } from "./cost.js";
 import { getMemoryContext } from "./memory.js";
 import type { PermissionRequest } from "./permissions.js";
 import { runAgentTurn } from "./agent.js";
+import { runFeishuBridge } from "./feishu.js";
 import { FEATURED_MODEL_IDS, findModelSpec, formatContextWindow } from "./models.js";
 import {
   deleteHistoryItem,
@@ -1305,6 +1306,11 @@ async function main(): Promise<void> {
       return;
     }
     await runSinglePrompt(prompt, { printOnly: true });
+    return;
+  }
+
+  if (command === "feishu") {
+    await runFeishuBridge();
     return;
   }
 

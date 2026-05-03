@@ -13,8 +13,10 @@ export interface PermissionRuntime {
 
 const ALWAYS_ALLOW_TOOLS = new Set([
   "get_cwd",
+  "list_drives",
   "list_files",
   "read_file",
+  "send_local_file",
   "glob_search",
   "grep_files",
   "list_memories",
