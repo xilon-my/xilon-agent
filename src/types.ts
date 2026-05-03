@@ -36,6 +36,7 @@ export interface TurnRecord {
   model: string;
   baseURL: string;
   requestMessages: ChatMessage[];
+  thinkingText?: string;
   responseText: string;
   usage: UsageSummary;
   cost: CostSummary;

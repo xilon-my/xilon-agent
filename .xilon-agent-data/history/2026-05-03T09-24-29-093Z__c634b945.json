@@ -1,0 +1,31 @@
+{
+  "id": "c634b945",
+  "sessionId": "8e882f70-9da5-4aa1-949c-e35de720b427",
+  "createdAt": "2026-05-03T09:24:29.093Z",
+  "model": "moonshot-v1-8k",
+  "baseURL": "https://api.moonshot.cn/v1",
+  "requestMessages": [
+    {
+      "role": "system",
+      "content": "You are a helpful CLI assistant."
+    },
+    {
+      "role": "user",
+      "content": "你好，请简单自我介绍"
+    }
+  ],
+  "thinkingText": "进行自我介绍。",
+  "responseText": "您好！我是xilonagent，一个透明的CLI编程助手。我在这里帮助您解答编程问题和提供代码相关的帮助。",
+  "usage": {
+    "promptTokens": 133,
+    "completionTokens": 43,
+    "totalTokens": 176,
+    "cachedTokens": 0
+  },
+  "cost": {
+    "inputCost": 0.000266,
+    "outputCost": 0.00043,
+    "cacheCost": 0,
+    "totalCost": 0.000696
+  }
+}

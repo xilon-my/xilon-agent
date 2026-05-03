@@ -21,7 +21,7 @@ export interface AppConfig {
 }
 
 export function getDataDir(): string {
-  return path.join(os.homedir(), ".xilon-agent");
+  return process.env.XILON_DATA_DIR ?? path.join(os.homedir(), ".xilon-agent");
 }
 
 export function loadConfig(): AppConfig {
