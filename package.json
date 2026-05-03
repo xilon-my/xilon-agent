@@ -1,0 +1,35 @@
+{
+  "name": "xilon-agent",
+  "version": "1.0.0",
+  "description": "Transparent CLI agent with visible usage, cost tracking, and local history.",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "xilon-agent": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xilon-my/xilon-agent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/xilon-my/xilon-agent/issues"
+  },
+  "homepage": "https://github.com/xilon-my/xilon-agent#readme",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "openai": "^6.35.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
