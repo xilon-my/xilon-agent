@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { getDataDir, loadConfig } from "./config.js";
@@ -8,8 +9,10 @@ import { formatCny } from "./cost.js";
 import { runAgentTurn } from "./agent.js";
 import { findModelSpec, formatContextWindow, KIMI_MODELS } from "./models.js";
 import { deleteHistoryItem, ensureDataDir, getHistoryItem, listHistory, saveTurn } from "./storage.js";
+import { renderInteractiveScreen } from "./ui.js";
 import type { Interface } from "node:readline/promises";
 import type { ChatMessage, CostSummary, ModelSpec, TurnRecord, UsageSummary } from "./types.js";
+import type { TranscriptEntry } from "./ui.js";
 
 interface SessionTotals {
   promptTokens: number;
@@ -19,6 +22,18 @@ interface SessionTotals {
   totalCost: number;
 }
 
+interface SessionState {
+  sessionId: string;
+  model: ModelSpec;
+  messages: ChatMessage[];
+  transcript: TranscriptEntry[];
+  totals: SessionTotals;
+  turnCount: number;
+  footerLines: string[];
+  lastUsage?: UsageSummary;
+  lastCost?: CostSummary;
+}
+
 function createEmptyTotals(): SessionTotals {
   return {
     promptTokens: 0,
@@ -26,6 +41,18 @@ function createEmptyTotals(): SessionTotals {
     totalTokens: 0,
     cachedTokens: 0,
     totalCost: 0,
+  };
+}
+
+function createSessionState(model: ModelSpec, systemPrompt: string): SessionState {
+  return {
+    sessionId: randomUUID(),
+    model,
+    messages: [{ role: "system", content: systemPrompt }],
+    transcript: [],
+    totals: createEmptyTotals(),
+    turnCount: 0,
+    footerLines: [],
   };
 }
 
@@ -39,6 +66,13 @@ function addUsage(totals: SessionTotals, usage: UsageSummary, cost: CostSummary)
 
 function printDivider(title: string): void {
   console.log(`\n=== ${title} ===`);
+}
+
+function printBanner(): void {
+  console.log("--------------------------------------------------");
+  console.log("xilonagent");
+  console.log("Transparent CLI agent for Kimi");
+  console.log("--------------------------------------------------");
 }
 
 function printUsage(label: string, usage: UsageSummary, cost: CostSummary): void {
@@ -60,6 +94,15 @@ function printSessionSummary(totals: SessionTotals): void {
   console.log(`cached_tokens: ${totals.cachedTokens}`);
   console.log(`total_tokens: ${totals.totalTokens}`);
   console.log(`total_cost: ${formatCny(totals.totalCost)}`);
+}
+
+function printShortStatus(state: SessionState): void {
+  printDivider("Session");
+  console.log(`model: ${state.model.id}`);
+  console.log(`turns: ${state.turnCount}`);
+  console.log(`messages: ${state.messages.length - 1}`);
+  console.log(`total_tokens: ${state.totals.totalTokens}`);
+  console.log(`total_cost: ${formatCny(state.totals.totalCost)}`);
 }
 
 function printRequest(messages: ChatMessage[], model: string, baseURL: string): void {
@@ -115,6 +158,52 @@ function printSelectedModel(model: ModelSpec): void {
   console.log(`input_cache_hit_price: ${formatRate(model.cacheHitPricePerMTok)}`);
   console.log(`input_cache_miss_price: ${formatRate(model.inputPricePerMTok)}`);
   console.log(`output_price: ${formatRate(model.outputPricePerMTok)}`);
+}
+
+function printHelp(): void {
+  printDivider("Commands");
+  console.log("/help    查看帮助");
+  console.log("/stats   查看当前会话统计");
+  console.log("/model   查看当前模型");
+  console.log("/clear   清空当前会话上下文");
+  console.log("/exit    退出");
+  console.log("/history-tip 使用 xilonagent history list/show/delete 管理历史记录");
+}
+
+function buildFooterLines(state: SessionState): string[] {
+  return state.footerLines;
+}
+
+function toUsageSummary(totals: SessionTotals): UsageSummary {
+  return {
+    promptTokens: totals.promptTokens,
+    completionTokens: totals.completionTokens,
+    totalTokens: totals.totalTokens,
+    cachedTokens: totals.cachedTokens,
+  };
+}
+
+function toCostSummary(totals: SessionTotals): CostSummary {
+  return {
+    inputCost: 0,
+    outputCost: 0,
+    cacheCost: 0,
+    totalCost: totals.totalCost,
+  };
+}
+
+function refreshInteractiveScreen(state: SessionState): void {
+  renderInteractiveScreen({
+    title: "xilonagent",
+    model: state.model,
+    transcript: state.transcript,
+    turnCount: state.turnCount,
+    totalUsage: toUsageSummary(state.totals),
+    totalCost: toCostSummary(state.totals),
+    lastUsage: state.lastUsage,
+    lastCost: state.lastCost,
+    footerLines: buildFooterLines(state),
+  });
 }
 
 async function selectModel(rl: Interface, defaultModelId?: string): Promise<ModelSpec> {
@@ -209,39 +298,54 @@ async function handleHistoryCommand(args: string[]): Promise<void> {
   }
 
   console.log("用法：");
-  console.log("  xilon-agent history list");
-  console.log("  xilon-agent history show <id>");
-  console.log("  xilon-agent history delete <id>");
+  console.log("  xilonagent history list");
+  console.log("  xilonagent history show <id>");
+  console.log("  xilonagent history delete <id>");
 }
 
 async function executeTurn(
-  sessionId: string,
-  messages: ChatMessage[],
-  totals: SessionTotals,
+  state: SessionState,
   userInput: string,
-  model: ModelSpec,
 ): Promise<void> {
   const config = loadConfig();
-  printRequest(messages, model.id, config.baseURL);
+  state.messages.push({ role: "user", content: userInput });
+  state.transcript.push({ role: "user", content: userInput });
+  const assistantEntry: TranscriptEntry = { role: "assistant", content: "" };
+  state.transcript.push(assistantEntry);
+  state.footerLines = [
+    `baseURL: ${config.baseURL}`,
+    `request_messages: ${state.messages.length}`,
+    "状态: 正在请求模型...",
+  ];
+  refreshInteractiveScreen(state);
 
-  printDivider("Assistant");
-  const result = await runAgentTurn(config, messages, model, (text) => {
-    process.stdout.write(text);
+  let lastRenderAt = 0;
+  const result = await runAgentTurn(config, state.messages, state.model, (text) => {
+    assistantEntry.content += text;
+    const now = Date.now();
+    if (now - lastRenderAt >= 50) {
+      state.footerLines = [
+        `baseURL: ${config.baseURL}`,
+        `request_messages: ${state.messages.length}`,
+        "状态: 正在流式输出...",
+      ];
+      refreshInteractiveScreen(state);
+      lastRenderAt = now;
+    }
   });
-  process.stdout.write("\n");
 
-  printResponseMeta(result.responseMeta);
-  printUsage("Usage", result.usage, result.cost);
-
-  addUsage(totals, result.usage, result.cost);
+  addUsage(state.totals, result.usage, result.cost);
+  state.turnCount += 1;
+  state.lastUsage = result.usage;
+  state.lastCost = result.cost;
 
   const turn: TurnRecord = {
     id: randomUUID().slice(0, 8),
-    sessionId,
+    sessionId: state.sessionId,
     createdAt: new Date().toISOString(),
-    model: model.id,
+    model: state.model.id,
     baseURL: config.baseURL,
-    requestMessages: messages.map((message) => ({ ...message })),
+    requestMessages: state.messages.map((message) => ({ ...message })),
     responseText: result.responseText,
     usage: result.usage,
     cost: result.cost,
@@ -249,9 +353,14 @@ async function executeTurn(
 
   await saveTurn(config.dataDir, turn);
 
-  messages.push({ role: "assistant", content: result.responseText });
-  console.log(`已保存历史记录：${turn.id}`);
-  console.log(`本轮用户输入：${userInput.length} chars`);
+  state.messages.push({ role: "assistant", content: result.responseText });
+  assistantEntry.content = result.responseText;
+  state.footerLines = [
+    `history_id: ${turn.id}`,
+    `response_id: ${result.responseMeta.id ?? "-"}`,
+    `finish_reason: ${result.responseMeta.finishReason ?? "-"}`,
+  ];
+  refreshInteractiveScreen(state);
 }
 
 async function runSinglePrompt(prompt: string): Promise<void> {
@@ -259,18 +368,12 @@ async function runSinglePrompt(prompt: string): Promise<void> {
   await ensureDataDir(config.dataDir);
 
   const rl = readline.createInterface({ input, output });
-  const sessionId = randomUUID();
-  const totals = createEmptyTotals();
   const model = await selectModel(rl, config.defaultModel);
-  printSelectedModel(model);
-  const messages: ChatMessage[] = [
-    { role: "system", content: config.systemPrompt },
-    { role: "user", content: prompt },
-  ];
+  const state = createSessionState(model, config.systemPrompt);
 
   try {
-    await executeTurn(sessionId, messages, totals, prompt, model);
-    printSessionSummary(totals);
+    await executeTurn(state, prompt);
+    printSessionSummary(state.totals);
   } finally {
     rl.close();
   }
@@ -281,18 +384,19 @@ async function runInteractive(): Promise<void> {
   await ensureDataDir(config.dataDir);
 
   const rl = readline.createInterface({ input, output });
-  const sessionId = randomUUID();
-  const totals = createEmptyTotals();
   const model = await selectModel(rl, config.defaultModel);
-  const messages: ChatMessage[] = [{ role: "system", content: config.systemPrompt }];
+  let state = createSessionState(model, config.systemPrompt);
 
-  console.log("xilon-agent 已启动。");
-  printSelectedModel(model);
-  console.log("输入内容开始对话，输入 /exit 结束，输入 /help 查看帮助。");
+  state.footerLines = [
+    `model: ${model.id}`,
+    "输入消息开始对话，使用 /help 查看命令",
+  ];
+  refreshInteractiveScreen(state);
 
   try {
     while (true) {
-      const userInput = (await rl.question("\nYou> ")).trim();
+      const prompt = `\nxilonagent(${state.model.id})> `;
+      const userInput = (await rl.question(prompt)).trim();
 
       if (!userInput) {
         continue;
@@ -303,23 +407,62 @@ async function runInteractive(): Promise<void> {
       }
 
       if (userInput === "/help") {
-        console.log("/exit 退出当前会话");
-        console.log("/help 查看帮助");
-        console.log(`/model 当前模型：${model.id}`);
-        console.log("/history-tip 使用 xilon-agent history list/show/delete 管理历史记录");
+        state.footerLines = [
+          "/help   查看帮助",
+          "/stats  查看当前会话统计",
+          "/model  查看当前模型价格信息",
+          "/clear  清空当前会话上下文",
+          "/exit   退出当前会话",
+        ];
+        refreshInteractiveScreen(state);
         continue;
       }
 
-      messages.push({ role: "user", content: userInput });
-      await executeTurn(sessionId, messages, totals, userInput, model);
+      if (userInput === "/stats") {
+        state.footerLines = [
+          `turns: ${state.turnCount}`,
+          `messages: ${state.messages.length - 1}`,
+          `total_tokens: ${state.totals.totalTokens}`,
+          `total_cost: ${formatCny(state.totals.totalCost)}`,
+        ];
+        refreshInteractiveScreen(state);
+        continue;
+      }
+
+      if (userInput === "/model") {
+        state.footerLines = [
+          `model: ${state.model.id}`,
+          `context: ${formatContextWindow(state.model.contextWindow)}`,
+          `input: ${formatRate(state.model.inputPricePerMTok)}`,
+          `output: ${formatRate(state.model.outputPricePerMTok)}`,
+          `cache: ${formatRate(state.model.cacheHitPricePerMTok)}`,
+        ];
+        refreshInteractiveScreen(state);
+        continue;
+      }
+
+      if (userInput === "/clear") {
+        state = createSessionState(state.model, config.systemPrompt);
+        state.footerLines = ["当前会话上下文已清空。"];
+        refreshInteractiveScreen(state);
+        continue;
+      }
+
+      await executeTurn(state, userInput);
     }
   } finally {
     rl.close();
-    printSessionSummary(totals);
+    printSessionSummary(state.totals);
   }
 }
 
 async function main(): Promise<void> {
+  if (!existsSync(new URL("../.env", import.meta.url))) {
+    console.error("未找到 .env，请先复制 .env.example 并填写 Kimi API Key。");
+    process.exitCode = 1;
+    return;
+  }
+
   const [command, ...rest] = process.argv.slice(2);
 
   if (command === "history") {
@@ -330,7 +473,7 @@ async function main(): Promise<void> {
   if (command === "chat") {
     const prompt = rest.join(" ").trim();
     if (!prompt) {
-      console.error("请提供聊天内容，例如：xilon-agent chat 你好");
+      console.error("请提供聊天内容，例如：xilonagent chat 你好");
       process.exitCode = 1;
       return;
     }

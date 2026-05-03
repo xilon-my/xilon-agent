@@ -1,17 +1,20 @@
 # xilon-agent
 
-一个主打“透明可见”的 CLI Agent。
+一个主打“透明可见”的 CLI Agent，默认命令名是 `xilonagent`。
 
 当前版本已提供这些基础能力：
 
 - 交互式 CLI 对话
+- 直接使用 `xilonagent` 命令启动
 - 启动时可选择 Kimi 模型
+- 提供带信息面板的 CLI 界面，而不是纯日志输出
 - 模型回复流式输出
 - 每轮完整展示发送给模型的消息内容
 - 展示 prompt/completion/cached token
 - 按内置 Kimi 价格表估算每轮成本
 - 退出时展示当前会话总 token 和总成本
 - 本地历史记录查看与删除
+- 提供 `/help`、`/stats`、`/model`、`/clear` 等 CLI 命令
 
 ## 快速开始
 
@@ -49,10 +52,16 @@ npm run build
 node dist/cli.js
 ```
 
-6. 如果你想直接使用 `xilon-agent` 命令
+6. 绑定全局命令
 
 ```bash
 npm link
+```
+
+之后即可直接使用：
+
+```bash
+xilonagent
 ```
 
 ## 用法
@@ -60,33 +69,40 @@ npm link
 启动交互式会话：
 
 ```bash
-node dist/cli.js
+xilonagent
 ```
 
-启动后会先列出内置 Kimi 模型，你可以输入序号选择模型，也可以直接回车使用 `.env` 中的 `XILON_DEFAULT_MODEL`。
+启动后会先列出内置 Kimi 模型，你可以输入序号选择模型，也可以直接回车使用 `.env` 中的 `XILON_DEFAULT_MODEL`。进入会话后可使用 `/help`、`/stats`、`/model`、`/clear`、`/exit`。
+
+交互模式会显示一个持续刷新的 CLI 界面，包含：
+
+- 顶部模型和价格信息面板
+- 中间对话区
+- 底部本轮/累计 token 与费用统计
+- 辅助状态信息，如 `history_id`、`response_id`、`finish_reason`
 
 单次对话：
 
 ```bash
-node dist/cli.js chat 你好，介绍一下你自己
+xilonagent chat 你好，介绍一下你自己
 ```
 
 查看历史：
 
 ```bash
-node dist/cli.js history list
+xilonagent history list
 ```
 
 查看某条历史详情：
 
 ```bash
-node dist/cli.js history show <id>
+xilonagent history show <id>
 ```
 
 删除某条历史：
 
 ```bash
-node dist/cli.js history delete <id>
+xilonagent history delete <id>
 ```
 
 ## 历史记录位置

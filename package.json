@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/cli.js",
   "bin": {
-    "xilon-agent": "./dist/cli.js"
+    "xilon-agent": "./dist/cli.js",
+    "xilonagent": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
